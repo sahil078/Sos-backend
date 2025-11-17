@@ -261,5 +261,109 @@ router.post('/resend-verification', async (req, res) => {
   }
 });
 
+// Get email by employee ID (for Supabase Auth login)
+router.post('/get-email-by-employee-id', async (req, res) => {
+  try {
+    const { employeeId } = req.body || {};
+    
+    if (!employeeId) {
+      return res.status(400).json({ error: 'Employee ID is required' });
+    }
+    
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('email')
+      .eq('employee_id', employeeId)
+      .single();
+    
+    if (error || !user || !user.email) {
+      return res.status(404).json({ error: 'Employee ID not found or no email associated' });
+    }
+    
+    return res.json({ email: user.email });
+  } catch (error) {
+    console.error('Get email by employee ID error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Sync Supabase Auth user with custom users table
+router.post('/sync-user', async (req, res) => {
+  try {
+    const { name, employeeId, supabaseUserId } = req.body || {};
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    
+    if (!token) {
+      return res.status(401).json({ error: 'Missing bearer token' });
+    }
+    
+    // Verify Supabase user
+    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+    
+    if (userError || !user) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    // Check if user already exists in custom users table
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id, name, employee_id')
+      .eq('email', user.email)
+      .single();
+    
+    if (existingUser) {
+      // Update existing user
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({
+          name: name || existingUser.name,
+          employee_id: employeeId || existingUser.employee_id,
+          email: user.email,
+          email_verified: user.email_confirmed_at ? true : false
+        })
+        .eq('id', existingUser.id);
+      
+      if (updateError) {
+        console.error('Sync user update error:', updateError);
+        return res.status(500).json({ error: 'Failed to sync user' });
+      }
+      
+      return res.json({ 
+        message: 'User synced successfully',
+        user: { id: existingUser.id, email: user.email, name, employeeId }
+      });
+    } else {
+      // Create new user in custom users table
+      const { data: newUser, error: insertError } = await supabase
+        .from('users')
+        .insert({
+          email: user.email,
+          employee_id: employeeId || null,
+          name: name || '',
+          email_verified: user.email_confirmed_at ? true : false,
+          role: 'employee',
+          // No password_hash needed since we're using Supabase Auth
+          password_hash: 'supabase_auth' // Placeholder since Supabase handles auth
+        })
+        .select('id, email, employee_id, name, role')
+        .single();
+      
+      if (insertError) {
+        console.error('Sync user insert error:', insertError);
+        return res.status(500).json({ error: 'Failed to sync user' });
+      }
+      
+      return res.json({ 
+        message: 'User synced successfully',
+        user: newUser
+      });
+    }
+  } catch (error) {
+    console.error('Sync user error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 module.exports = router;
 
